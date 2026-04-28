@@ -12,6 +12,7 @@
 | 下降趋势 | 计算每台过滤器维护周期内日均下降率、月均下降率、年化下降率 | `fig_01a_filter_time_series_facets.png`、`fig_02_filter_trend_lines.png`、`fig_07_filter_decline_rate.png` |
 | 维护影响 | 匹配维护前后透水率，计算恢复量、相对恢复率和维护后 3/7/15 天均值 | `fig_05_maintenance_effect_boxplot.png`、`fig_06_before_after_maintenance.png`、`maintenance_match.xlsx`、`维护效果统计表.xlsx` |
 | 影响指标 | 输出下降率、季节因子、维护恢复量、维护后衰减率、维护有效性系数 | `第1问结论要点.md`、`每台过滤器下降率表.xlsx`、`维护效果统计表.xlsx` |
+| 异常与联动补充 | 补充异常点、跳变点识别口径，并分析透水率监测数据与维护记录的联动关系 | `异常点与跳变点分析说明.md`、`维护记录与透水率联动分析.md`、`异常跳变点联动分析表.xlsx`、`fig_08_jump_points_and_maintenance.png` |
 
 ## 2. 图表清单
 
@@ -31,6 +32,7 @@
 | `fig_05_maintenance_effect_boxplot.png` | 维护效果分布图 | 中维护和大维护恢复量箱线图，标注样本量 | 绝大多数维护具有正向恢复效果，中维护样本多且恢复量分布较宽 |
 | `fig_06_before_after_maintenance.png` | 维护前后对比图 | 对比维护前、维护后、维护后 7 天和 15 天均值 | 维护后透水率显著回升，但 7—15 天后均值出现回落，体现维护效果随运行时间衰减 |
 | `fig_07_filter_decline_rate.png` | 设备差异图 | 展示各过滤器维护周期年化下降量 | 不同过滤器年化下降量存在差异，说明寿命预测需要考虑设备个体差异 |
+| `fig_08_jump_points_and_maintenance.png` | 异常跳变与维护联动图 | 展示跳变点是否邻近维护，并比较维护恢复量与维护后 3 天跳升幅度 | 维护邻近跳变多数为向上跳升，说明维护记录与透水率跳升具有明显事件联动关系 |
 
 ## 3. 推荐正文用图顺序
 
@@ -41,8 +43,9 @@
 3. `fig_07_filter_decline_rate.png`：展示不同过滤器下降速度差异。
 4. `fig_03_monthly_average_permeability.png` 和 `fig_04_seasonal_average_permeability.png`：用于周期性与季节性分析。
 5. `fig_05_maintenance_effect_boxplot.png` 和 `fig_06_before_after_maintenance.png`：用于维护效果分析。
-6. `fig_01b_normalized_permeability_trend.png`：可作为趋势补充图，若正文篇幅有限可放附录。
-7. `fig_01_all_filters_time_series.png`：保留为总览图或附录图，不建议作为正文唯一趋势图。
+6. `fig_08_jump_points_and_maintenance.png`：用于回应异常跳变和维护记录联动关系，建议放在维护效果分析之后。
+7. `fig_01b_normalized_permeability_trend.png`：可作为趋势补充图，若正文篇幅有限可放附录。
+8. `fig_01_all_filters_time_series.png`：保留为总览图或附录图，不建议作为正文唯一趋势图。
 
 ## 4. 图注建议
 
@@ -57,6 +60,7 @@
 | `fig_05_maintenance_effect_boxplot.png` | 图 7 不同维护类型透水率恢复量箱线图 |
 | `fig_06_before_after_maintenance.png` | 图 8 维护前后透水率变化对比图 |
 | `fig_07_filter_decline_rate.png` | 图 9 各过滤器维护周期年化下降量对比图 |
+| `fig_08_jump_points_and_maintenance.png` | 图 10 跳变点与维护记录联动分析图 |
 
 说明：最终图号由 C 依据论文整体排版统一调整，上表只给出推荐顺序。
 
@@ -69,6 +73,9 @@
 | 维护匹配表 | `01_数据处理_A/exports/maintenance_match.xlsx` | `before_per`、`after_per`、`delta_per`、`relative_recovery_rate`、`after_7d_mean`、`after_15d_mean` | 127 条维护记录均能匹配到维护前后透水率，维护效果可量化 |
 | 维护效果统计表 | `01_数据处理_A/exports/维护效果统计表.xlsx` | 按维护类型和过滤器汇总恢复量、恢复率和维护后衰减率 | 中维护平均恢复量约 19.33，大维护平均恢复量约 17.35；大维护相对恢复率较高 |
 | 每台过滤器下降率表 | `01_数据处理_A/exports/每台过滤器下降率表.xlsx` | 下降率、年化下降量、月均、季节均值和影响因子 | 10 台过滤器年化下降量存在明显差异，范围约 108.97 至 145.90 |
+| 异常跳变点联动分析表 | `01_数据处理_A/exports/异常跳变点联动分析表.xlsx` | 跳变点、跳变阈值、维护邻近关系、异常日期和联动统计 | 共识别 470 个日尺度跳变点，其中 146 个位于维护前后 3 天内，维护邻近跳变中 85.62% 为向上跳升 |
+| 异常点与跳变点分析说明 | `01_数据处理_A/exports/异常点与跳变点分析说明.md` | 缺失、IQR 异常、跳变点和断档的处理口径 | 可用于回应“异常点和跳变点处理过于简单”的问题 |
+| 维护记录与透水率联动分析 | `01_数据处理_A/exports/维护记录与透水率联动分析.md` | 透水率数据与维护记录的事件关联说明 | 可用于回应“缺少数据 A/B 内在联系”的问题 |
 | 第 1 问结论要点 | `01_数据处理_A/exports/第1问结论要点.md` | 趋势、周期性、维护影响和建模指标总结 | 可作为第 1 问正文提纲和结论依据 |
 
 ## 6. 第 1 问结论要点
@@ -94,12 +101,20 @@
 - 大维护样本量仅 17 条，不能仅凭当前数据断定其绝对恢复量一定弱于中维护；更稳妥的结论是大维护具有较高相对恢复率，但样本规模较小。
 - 维护后 7 天和 15 天均值低于维护后最近透水率均值，说明维护效果会随运行时间衰减。
 
-### 6.4 影响指标
+### 6.4 异常、跳变与维护联动
+
+- 缺失值、IQR 异常值和跳变点均未直接删除，而是分别保留 `is_missing`、`is_outlier` 和跳变联动标记。
+- 日尺度跳变点采用每台过滤器 `|diff_per_per_day|` 的 `Q3 + 1.5IQR` 稳健阈值识别，共识别 470 个跳变点。
+- 其中 146 个跳变点位于维护前后 3 天内，维护邻近跳变中 125 个为向上跳升，占比 85.62%，说明维护事件与透水率跳升具有明显联动。
+- 未邻近维护的跳变点不直接删除，建议在论文中解释为运行扰动、采样波动或未记录事件的候选异常。
+
+### 6.5 影响指标
 
 - 趋势指标：`daily_decline_rate`、`monthly_decline_rate`、`annual_decline_rate`。
 - 周期指标：`month_factor`、`season_factor`。
 - 维护指标：`delta_per`、`relative_recovery_rate`、`post_7d_decline_rate`、`post_15d_decline_rate`。
 - 综合指标：`maintenance_effectiveness_coef`。
+- 异常与联动指标：`diff_per`、`diff_per_per_day`、`is_maintenance_linked`、`maintenance_relation`。
 
 ## 7. 可直接写入论文的正文草稿
 
@@ -115,6 +130,10 @@
 
 维护记录与透水率数据匹配后可以看出，维护对透水率具有显著恢复作用。中维护和大维护后，透水率均出现不同程度提升，其中中维护平均恢复量约为 19.33，大维护平均恢复量约为 17.35；从相对恢复率看，大维护平均相对恢复率更高。进一步比较维护后 7 天和 15 天均值可知，维护后的透水率提升并非长期保持不变，而是随着运行时间逐渐衰减。因此，在后续维护优化模型中，既需要考虑维护带来的即时恢复量，也需要考虑维护后的再次衰减速度。
 
+### 7.4 异常跳变与联动分析段落
+
+为避免简单删除异常点造成信息损失，本文对缺失值、IQR 异常值和日尺度跳变点分别进行标记和分类处理。跳变点识别采用每台过滤器日均透水率变化率的稳健阈值，并进一步与维护记录进行时间邻近匹配。结果显示，470 个日尺度跳变点中有 146 个位于维护前后 3 天内，其中 125 个为向上跳升，占比 85.62%。这表明相当一部分透水率突变并非孤立异常，而是与维护事件存在明确对应关系。对于未邻近维护的跳变点，本文不直接删除，而是作为运行扰动、采样波动或未记录事件的候选异常保留。
+
 ## 8. 写作建议
 
 - 趋势分析小节优先使用 `fig_01a_filter_time_series_facets.png`，因为该图比 10 台同图更清晰。
@@ -122,6 +141,7 @@
 - `fig_01b_normalized_permeability_trend.png` 适合用一句话解释“不同过滤器量级不同，因此补充标准化趋势图观察相对变化”。
 - 季节性小节建议使用 `fig_03_monthly_average_permeability.png` 和 `fig_04_seasonal_average_permeability.png`，并配合月均最高、最低和季节均值写结论。
 - 维护效果小节建议使用 `fig_05_maintenance_effect_boxplot.png` 和 `fig_06_before_after_maintenance.png`，一张说明恢复量分布，一张说明维护后衰减。
+- 异常与联动补充小节建议使用 `fig_08_jump_points_and_maintenance.png`，并配合 `异常点与跳变点分析说明.md`、`维护记录与透水率联动分析.md` 回应 C 侧反馈。
 - 涉及大维护结论时必须保留“样本量仅 17 条”的限制说明。
 - 涉及季节性结论时建议表述为“观测数据表现出”，不要直接写成严格因果结论。
 
