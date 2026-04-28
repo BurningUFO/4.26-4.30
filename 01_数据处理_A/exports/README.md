@@ -8,7 +8,7 @@
 | ---- | ---- | -------- |
 | 阶段 1：数据盘点 | 已完成 | 数据结构说明、维护记录概览、异常情况清单、阶段 1 统计 CSV |
 | 阶段 2：数据清洗 | 已完成 | `clean_data.xlsx`、`maintenance_record.xlsx`、`数据清洗说明.md` |
-| 阶段 3：第 1 问分析 | 已完成 | `maintenance_match.xlsx`、`维护效果统计表.xlsx`、`每台过滤器下降率表.xlsx`、`第1问结论要点.md` |
+| 阶段 3：第 1 问分析 | 已完成并补强 | `maintenance_match.xlsx`、`维护效果统计表.xlsx`、`每台过滤器下降率表.xlsx`、`异常跳变点联动分析表.xlsx`、`第1问结论要点.md` |
 | 阶段 4：辅助 B 建模 | 已完成首版交接 | `A_to_B_数据与建模参数交接说明.md` |
 | 阶段 5：辅助 C 论文整合 | 已完成首版交接 | `A_to_C_第1问论文素材交接说明.md` |
 
@@ -63,11 +63,20 @@
 - `每台过滤器下降率表.xlsx`
   - 作用：保存第 1 问趋势和季节性分析的核心参数。
   - 主要工作表：`decline_rate_by_filter`、`monthly_average_overall`、`seasonal_average_overall`、`monthly_average_by_filter`、`seasonal_average_by_filter`。
+- `异常跳变点联动分析表.xlsx`
+  - 作用：保存异常点、跳变点与维护记录之间的联动分析结果。
+  - 主要工作表：`jump_points`、`jump_thresholds`、`jump_summary_by_filter`、`jump_relation_summary`、`maintenance_jump_summary`、`outlier_days`、`outlier_summary_by_filter`。
 
 ### Markdown 说明文件
 
 - `第1问结论要点.md`
   - 作用：汇总第 1 问可直接交给 B 和 C 的文字结论与指标解释。
+- `异常点与跳变点分析说明.md`
+  - 作用：说明缺失值、IQR 异常值、断档和日尺度跳变点的识别与处理口径，回应 C 侧关于异常处理过于简单的反馈。
+- `维护记录与透水率联动分析.md`
+  - 作用：说明透水率监测数据与维护记录的事件联动关系，回应 C 侧关于数据内在联系不足的反馈。
+- `C反馈回应与增强说明.md`
+  - 作用：汇总 C 侧反馈要点、A 侧补强动作、新增文件和论文写作建议。
 - `A_阶段0-3纵览检查与优化记录.md`
   - 作用：记录成员 A 阶段 0 至阶段 3 的完整性、合理性、图表质量和剩余风险检查。
 

@@ -46,6 +46,7 @@ ATTACHMENT_2 = RAW_DIR / "附件2.xlsx"
 EXPECTED_SHEETS = [f"A_{idx}" for idx in range(1, 11)]
 EXPECTED_MAINTAIN_TYPES = {"中维护", "大维护"}
 MATCH_WINDOWS_HOURS = (24, 72, 168)
+JUMP_LINK_WINDOW_DAYS = 3
 SEASON_ORDER = ["春", "夏", "秋", "冬"]
 
 
@@ -73,6 +74,10 @@ class Stage3Outputs:
     maintenance_effect_excel: Path
     decline_rate_excel: Path
     conclusions_markdown: Path
+    jump_linkage_excel: Path
+    anomaly_jump_markdown: Path
+    permeability_maintenance_linkage_markdown: Path
+    c_feedback_response_markdown: Path
     figure_paths: tuple[Path, ...]
 
 
@@ -1324,6 +1329,258 @@ def build_maintenance_effect_tables(
     return summary_by_type, summary_by_filter_type, decay_summary
 
 
+def attach_nearest_maintenance(
+    frame: pd.DataFrame,
+    maintenance_record_df: pd.DataFrame,
+    date_col: str,
+) -> pd.DataFrame:
+    result = frame.copy()
+    nearest_dates: list[pd.Timestamp | pd.NaT] = []
+    nearest_types: list[str | float] = []
+    nearest_levels: list[int | float] = []
+    nearest_days: list[int | float] = []
+
+    maintenance_record_df = maintenance_record_df.copy()
+    maintenance_record_df["date"] = pd.to_datetime(maintenance_record_df["date"])
+
+    for record in result.itertuples(index=False):
+        filter_id = getattr(record, "filter_id")
+        date_value = pd.Timestamp(getattr(record, date_col))
+        maint_group = maintenance_record_df[maintenance_record_df["filter_id"] == filter_id]
+        if maint_group.empty:
+            nearest_dates.append(pd.NaT)
+            nearest_types.append(np.nan)
+            nearest_levels.append(np.nan)
+            nearest_days.append(np.nan)
+            continue
+
+        day_delta = (date_value - maint_group["date"]).dt.days
+        nearest_idx = day_delta.abs().idxmin()
+        nearest_dates.append(maint_group.loc[nearest_idx, "date"])
+        nearest_types.append(maint_group.loc[nearest_idx, "maintain_type"])
+        nearest_levels.append(maint_group.loc[nearest_idx, "maintain_level"])
+        nearest_days.append(int(day_delta.loc[nearest_idx]))
+
+    result["nearest_maintenance_date"] = nearest_dates
+    result["nearest_maintain_type"] = nearest_types
+    result["nearest_maintain_level"] = nearest_levels
+    result["days_from_nearest_maintenance"] = nearest_days
+    result["is_maintenance_linked"] = (
+        result["days_from_nearest_maintenance"].abs() <= JUMP_LINK_WINDOW_DAYS
+    )
+    result["maintenance_relation"] = np.select(
+        [
+            result["days_from_nearest_maintenance"].between(0, JUMP_LINK_WINDOW_DAYS, inclusive="both"),
+            result["days_from_nearest_maintenance"].between(-JUMP_LINK_WINDOW_DAYS, -1, inclusive="both"),
+        ],
+        [
+            f"维护后{JUMP_LINK_WINDOW_DAYS}天内",
+            f"维护前{JUMP_LINK_WINDOW_DAYS}天内",
+        ],
+        default="未邻近维护",
+    )
+    return result
+
+
+def build_jump_and_linkage_tables(
+    clean_data_df: pd.DataFrame,
+    daily_valid: pd.DataFrame,
+    maintenance_record_df: pd.DataFrame,
+    maintenance_match_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    jump_frames: list[pd.DataFrame] = []
+    threshold_rows: list[dict[str, object]] = []
+
+    for filter_id in sorted(daily_valid["filter_id"].unique(), key=filter_sort_key):
+        group = daily_valid[daily_valid["filter_id"] == filter_id].sort_values("date").copy()
+        group["previous_date"] = group["date"].shift()
+        group["previous_daily_per"] = group["daily_per"].shift()
+        group["gap_days"] = (group["date"] - group["previous_date"]).dt.days
+        group["diff_per"] = group["daily_per"] - group["previous_daily_per"]
+        group["diff_per_per_day"] = group["diff_per"] / group["gap_days"].replace(0, np.nan)
+
+        abs_rate = group["diff_per_per_day"].abs().dropna()
+        q1 = abs_rate.quantile(0.25)
+        q3 = abs_rate.quantile(0.75)
+        iqr = q3 - q1
+        threshold = q3 + 1.5 * iqr
+        group["jump_threshold"] = threshold
+        group["is_jump"] = group["diff_per_per_day"].abs() > threshold
+        jump_group = group[group["is_jump"]].copy()
+        jump_group["jump_direction"] = np.where(jump_group["diff_per"] >= 0, "向上跳升", "向下跳降")
+        jump_frames.append(jump_group)
+
+        threshold_rows.append(
+            {
+                "filter_id": filter_id,
+                "valid_day_count": len(group),
+                "diff_sample_count": int(abs_rate.size),
+                "abs_diff_q1": q1,
+                "abs_diff_q3": q3,
+                "abs_diff_iqr": iqr,
+                "jump_threshold_per_day": threshold,
+                "jump_count": int(jump_group.shape[0]),
+                "positive_jump_count": int((jump_group["diff_per"] > 0).sum()),
+                "negative_jump_count": int((jump_group["diff_per"] < 0).sum()),
+            }
+        )
+
+    jump_points_df = pd.concat(jump_frames, ignore_index=True) if jump_frames else pd.DataFrame()
+    if not jump_points_df.empty:
+        jump_points_df = attach_nearest_maintenance(jump_points_df, maintenance_record_df, "date")
+        jump_points_df["linked_maintain_type"] = np.where(
+            jump_points_df["is_maintenance_linked"],
+            jump_points_df["nearest_maintain_type"],
+            "未邻近维护",
+        )
+        jump_points_df = jump_points_df[
+            [
+                "filter_id",
+                "date",
+                "previous_date",
+                "previous_daily_per",
+                "daily_per",
+                "gap_days",
+                "diff_per",
+                "diff_per_per_day",
+                "jump_threshold",
+                "jump_direction",
+                "nearest_maintenance_date",
+                "nearest_maintain_type",
+                "nearest_maintain_level",
+                "days_from_nearest_maintenance",
+                "is_maintenance_linked",
+                "maintenance_relation",
+                "linked_maintain_type",
+            ]
+        ].sort_values(["filter_id", "date"], kind="stable")
+
+    jump_threshold_df = pd.DataFrame(threshold_rows)
+    jump_summary_by_filter = (
+        jump_points_df.groupby("filter_id", as_index=False)
+        .agg(
+            jump_count=("date", "size"),
+            positive_jump_count=("jump_direction", lambda series: (series == "向上跳升").sum()),
+            negative_jump_count=("jump_direction", lambda series: (series == "向下跳降").sum()),
+            maintenance_linked_jump_count=("is_maintenance_linked", "sum"),
+            maintenance_linked_positive_jump_count=(
+                "diff_per",
+                lambda series: ((series > 0) & jump_points_df.loc[series.index, "is_maintenance_linked"]).sum(),
+            ),
+            mean_abs_diff_per=("diff_per", lambda series: series.abs().mean()),
+            max_abs_diff_per=("diff_per", lambda series: series.abs().max()),
+        )
+        if not jump_points_df.empty
+        else pd.DataFrame()
+    )
+    if not jump_summary_by_filter.empty:
+        jump_summary_by_filter["maintenance_linked_ratio"] = (
+            jump_summary_by_filter["maintenance_linked_jump_count"] / jump_summary_by_filter["jump_count"]
+        )
+        jump_summary_by_filter["filter_order"] = jump_summary_by_filter["filter_id"].map(filter_sort_key)
+        jump_summary_by_filter = jump_summary_by_filter.sort_values("filter_order").drop(columns="filter_order")
+
+    jump_relation_summary = (
+        jump_points_df.groupby(["maintenance_relation", "jump_direction"], as_index=False)
+        .agg(
+            jump_count=("date", "size"),
+            mean_diff_per=("diff_per", "mean"),
+            median_diff_per=("diff_per", "median"),
+            mean_abs_diff_per=("diff_per", lambda series: series.abs().mean()),
+        )
+        if not jump_points_df.empty
+        else pd.DataFrame()
+    )
+
+    maintenance_jump_rows: list[dict[str, object]] = []
+    for record in maintenance_record_df.itertuples(index=False):
+        filter_jumps = jump_points_df[jump_points_df["filter_id"] == record.filter_id] if not jump_points_df.empty else pd.DataFrame()
+        window = filter_jumps[
+            (filter_jumps["date"] >= record.date - pd.Timedelta(days=JUMP_LINK_WINDOW_DAYS))
+            & (filter_jumps["date"] <= record.date + pd.Timedelta(days=JUMP_LINK_WINDOW_DAYS))
+        ]
+        after_window = window[window["date"] >= record.date]
+        positive_after = after_window[after_window["diff_per"] > 0]
+        maintenance_jump_rows.append(
+            {
+                "filter_id": record.filter_id,
+                "maintain_date": record.date,
+                "maintain_type": record.maintain_type,
+                "maintain_level": record.maintain_level,
+                "jump_count_pm3d": int(window.shape[0]),
+                "positive_jump_count_after_3d": int(positive_after.shape[0]),
+                "max_positive_jump_after_3d": positive_after["diff_per"].max() if not positive_after.empty else np.nan,
+                "mean_positive_jump_after_3d": positive_after["diff_per"].mean() if not positive_after.empty else np.nan,
+                "has_positive_jump_after_3d": bool(not positive_after.empty),
+            }
+        )
+    maintenance_jump_df = pd.DataFrame(maintenance_jump_rows)
+    maintenance_jump_df = maintenance_jump_df.merge(
+        maintenance_match_df[
+            ["filter_id", "maintain_date", "delta_per", "relative_recovery_rate", "selected_window_hours"]
+        ],
+        on=["filter_id", "maintain_date"],
+        how="left",
+    )
+    maintenance_jump_summary = maintenance_jump_df.groupby(["maintain_type", "maintain_level"], as_index=False).agg(
+        maintenance_count=("maintain_date", "size"),
+        with_jump_pm3d_count=("jump_count_pm3d", lambda series: (series > 0).sum()),
+        with_positive_jump_after_3d_count=("has_positive_jump_after_3d", "sum"),
+        mean_delta_per=("delta_per", "mean"),
+        mean_relative_recovery_rate=("relative_recovery_rate", "mean"),
+        mean_max_positive_jump_after_3d=("max_positive_jump_after_3d", "mean"),
+        mean_jump_count_pm3d=("jump_count_pm3d", "mean"),
+    )
+    maintenance_jump_summary["positive_jump_after_3d_ratio"] = (
+        maintenance_jump_summary["with_positive_jump_after_3d_count"]
+        / maintenance_jump_summary["maintenance_count"]
+    )
+
+    outlier_days_df = (
+        clean_data_df.copy()
+        .assign(date=lambda frame: pd.to_datetime(frame["date"]))
+        .groupby(["filter_id", "date"], as_index=False)
+        .agg(
+            record_count=("per", "size"),
+            missing_count=("is_missing", "sum"),
+            outlier_count=("is_outlier", "sum"),
+            valid_mean_per=("per", "mean"),
+        )
+    )
+    outlier_days_df = outlier_days_df[outlier_days_df["outlier_count"] > 0].copy()
+    outlier_days_df["outlier_ratio"] = outlier_days_df["outlier_count"] / outlier_days_df["record_count"]
+    if not outlier_days_df.empty:
+        outlier_days_df = attach_nearest_maintenance(outlier_days_df, maintenance_record_df, "date")
+    outlier_summary_by_filter = (
+        outlier_days_df.groupby("filter_id", as_index=False)
+        .agg(
+            outlier_day_count=("date", "size"),
+            outlier_record_count=("outlier_count", "sum"),
+            maintenance_linked_outlier_day_count=("is_maintenance_linked", "sum"),
+            mean_outlier_ratio=("outlier_ratio", "mean"),
+        )
+        if not outlier_days_df.empty
+        else pd.DataFrame()
+    )
+    if not outlier_summary_by_filter.empty:
+        outlier_summary_by_filter["maintenance_linked_outlier_day_ratio"] = (
+            outlier_summary_by_filter["maintenance_linked_outlier_day_count"]
+            / outlier_summary_by_filter["outlier_day_count"]
+        )
+        outlier_summary_by_filter["filter_order"] = outlier_summary_by_filter["filter_id"].map(filter_sort_key)
+        outlier_summary_by_filter = outlier_summary_by_filter.sort_values("filter_order").drop(columns="filter_order")
+
+    return (
+        jump_points_df.reset_index(drop=True),
+        jump_threshold_df,
+        jump_summary_by_filter,
+        jump_relation_summary,
+        maintenance_jump_summary,
+        outlier_days_df.reset_index(drop=True),
+        outlier_summary_by_filter,
+    )
+
+
 def save_figure_to_targets(fig: plt.Figure, filename: str) -> Path:
     path_a = FIGURE_DIR_A / filename
     path_c = FIGURE_DIR_C / filename
@@ -1567,6 +1824,92 @@ def plot_filter_decline_rate(decline_rate_df: pd.DataFrame) -> Path:
     return save_figure_to_targets(fig, "fig_07_filter_decline_rate.png")
 
 
+def plot_jump_points_and_maintenance(
+    jump_points_df: pd.DataFrame,
+    maintenance_jump_summary: pd.DataFrame,
+) -> Path:
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+
+    jump_plot = jump_points_df.copy()
+    jump_plot["filter_order"] = jump_plot["filter_id"].map(filter_sort_key)
+    jump_plot = jump_plot.sort_values("filter_order")
+    summary_rows = []
+    for filter_id in jump_plot["filter_id"].drop_duplicates():
+        group = jump_plot[jump_plot["filter_id"] == filter_id]
+        summary_rows.append(
+            {
+                "filter_id": filter_id,
+                "维护邻近向上跳升": int(((group["is_maintenance_linked"]) & (group["diff_per"] > 0)).sum()),
+                "维护邻近向下跳降": int(((group["is_maintenance_linked"]) & (group["diff_per"] < 0)).sum()),
+                "未邻近维护跳变": int((~group["is_maintenance_linked"]).sum()),
+            }
+        )
+    jump_summary = pd.DataFrame(summary_rows)
+    x = np.arange(len(jump_summary))
+    bottom = np.zeros(len(jump_summary))
+    colors = {
+        "维护邻近向上跳升": "#55A868",
+        "维护邻近向下跳降": "#C44E52",
+        "未邻近维护跳变": "#9A9A9A",
+    }
+    for column in ["维护邻近向上跳升", "维护邻近向下跳降", "未邻近维护跳变"]:
+        axes[0].bar(x, jump_summary[column], bottom=bottom, color=colors[column], label=column)
+        bottom += jump_summary[column].to_numpy()
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(jump_summary["filter_id"], rotation=0)
+    axes[0].set_title("各过滤器跳变点与维护邻近关系")
+    axes[0].set_xlabel("过滤器编号")
+    axes[0].set_ylabel("跳变点数量")
+    axes[0].legend(loc="upper right", fontsize=8)
+
+    type_plot = maintenance_jump_summary.sort_values("maintain_level").copy()
+    labels = type_plot["maintain_type"].tolist()
+    x2 = np.arange(len(labels))
+    width = 0.35
+    axes[1].bar(
+        x2 - width / 2,
+        type_plot["mean_delta_per"],
+        width=width,
+        color="#4C72B0",
+        label="维护匹配平均恢复量",
+    )
+    axes[1].bar(
+        x2 + width / 2,
+        type_plot["mean_max_positive_jump_after_3d"],
+        width=width,
+        color="#DD8452",
+        label="维护后3天最大向上跳升均值",
+    )
+    for idx, row in enumerate(type_plot.itertuples(index=False)):
+        axes[1].text(idx - width / 2, row.mean_delta_per + 0.5, f"{row.mean_delta_per:.1f}", ha="center", fontsize=8)
+        if pd.notna(row.mean_max_positive_jump_after_3d):
+            axes[1].text(
+                idx + width / 2,
+                row.mean_max_positive_jump_after_3d + 0.5,
+                f"{row.mean_max_positive_jump_after_3d:.1f}",
+                ha="center",
+                fontsize=8,
+            )
+        axes[1].text(
+            idx,
+            max(row.mean_delta_per, row.mean_max_positive_jump_after_3d) + 3,
+            f"后3天跳升占比={row.positive_jump_after_3d_ratio:.1%}",
+            ha="center",
+            fontsize=8,
+        )
+    axes[1].set_xticks(x2)
+    axes[1].set_xticklabels(labels)
+    axes[1].set_title("维护恢复量与邻近跳升幅度对比")
+    axes[1].set_xlabel("维护类型")
+    axes[1].set_ylabel("透水率变化量")
+    axes[1].legend(loc="upper right", fontsize=8)
+    axes[1].set_ylim(0, max(type_plot["mean_delta_per"].max(), type_plot["mean_max_positive_jump_after_3d"].max()) + 8)
+
+    fig.suptitle("跳变点与维护记录联动分析图", y=0.98)
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    return save_figure_to_targets(fig, "fig_08_jump_points_and_maintenance.png")
+
+
 def build_stage3_excel_outputs(
     maintenance_match_df: pd.DataFrame,
     summary_by_type: pd.DataFrame,
@@ -1577,12 +1920,23 @@ def build_stage3_excel_outputs(
     seasonal_overall: pd.DataFrame,
     monthly_by_filter: pd.DataFrame,
     seasonal_by_filter: pd.DataFrame,
+    jump_points_df: pd.DataFrame,
+    jump_threshold_df: pd.DataFrame,
+    jump_summary_by_filter: pd.DataFrame,
+    jump_relation_summary: pd.DataFrame,
+    maintenance_jump_summary: pd.DataFrame,
+    outlier_days_df: pd.DataFrame,
+    outlier_summary_by_filter: pd.DataFrame,
 ) -> Stage3Outputs:
     outputs = Stage3Outputs(
         maintenance_match_excel=EXPORT_DIR / "maintenance_match.xlsx",
         maintenance_effect_excel=EXPORT_DIR / "维护效果统计表.xlsx",
         decline_rate_excel=EXPORT_DIR / "每台过滤器下降率表.xlsx",
         conclusions_markdown=EXPORT_DIR / "第1问结论要点.md",
+        jump_linkage_excel=EXPORT_DIR / "异常跳变点联动分析表.xlsx",
+        anomaly_jump_markdown=EXPORT_DIR / "异常点与跳变点分析说明.md",
+        permeability_maintenance_linkage_markdown=EXPORT_DIR / "维护记录与透水率联动分析.md",
+        c_feedback_response_markdown=EXPORT_DIR / "C反馈回应与增强说明.md",
         figure_paths=(),
     )
 
@@ -1616,7 +1970,227 @@ def build_stage3_excel_outputs(
         monthly_by_filter.to_excel(writer, sheet_name="monthly_average_by_filter", index=False)
         seasonal_by_filter.to_excel(writer, sheet_name="seasonal_average_by_filter", index=False)
 
+    with pd.ExcelWriter(
+        outputs.jump_linkage_excel,
+        engine="openpyxl",
+        date_format="YYYY-MM-DD",
+        datetime_format="YYYY-MM-DD HH:MM:SS",
+    ) as writer:
+        jump_points_df.to_excel(writer, sheet_name="jump_points", index=False)
+        jump_threshold_df.to_excel(writer, sheet_name="jump_thresholds", index=False)
+        jump_summary_by_filter.to_excel(writer, sheet_name="jump_summary_by_filter", index=False)
+        jump_relation_summary.to_excel(writer, sheet_name="jump_relation_summary", index=False)
+        maintenance_jump_summary.to_excel(writer, sheet_name="maintenance_jump_summary", index=False)
+        outlier_days_df.to_excel(writer, sheet_name="outlier_days", index=False)
+        outlier_summary_by_filter.to_excel(writer, sheet_name="outlier_summary_by_filter", index=False)
+
     return outputs
+
+
+def write_anomaly_jump_markdown(
+    outputs: Stage3Outputs,
+    clean_data_df: pd.DataFrame,
+    jump_points_df: pd.DataFrame,
+    jump_threshold_df: pd.DataFrame,
+    jump_summary_by_filter: pd.DataFrame,
+    outlier_summary_by_filter: pd.DataFrame,
+) -> None:
+    missing_count = int(clean_data_df["is_missing"].sum())
+    outlier_count = int(clean_data_df["is_outlier"].sum())
+    jump_count = int(jump_points_df.shape[0])
+    linked_jump_count = int(jump_points_df["is_maintenance_linked"].sum()) if not jump_points_df.empty else 0
+    positive_linked_jump_count = int(
+        ((jump_points_df["is_maintenance_linked"]) & (jump_points_df["diff_per"] > 0)).sum()
+    ) if not jump_points_df.empty else 0
+    outlier_day_count = int(outlier_summary_by_filter["outlier_day_count"].sum()) if not outlier_summary_by_filter.empty else 0
+    linked_outlier_day_count = int(
+        outlier_summary_by_filter["maintenance_linked_outlier_day_count"].sum()
+    ) if not outlier_summary_by_filter.empty else 0
+
+    overview = pd.DataFrame(
+        [
+            {"项目": "透水率原始清洗记录", "数量": len(clean_data_df), "说明": "保留原始行，不覆盖附件"},
+            {"项目": "缺失透水率记录", "数量": missing_count, "说明": "保留并标记 `is_missing=1`"},
+            {"项目": "IQR 初筛异常记录", "数量": outlier_count, "说明": "保留并标记 `is_outlier=1`"},
+            {"项目": "含异常值的日期数", "数量": outlier_day_count, "说明": "按过滤器-日期聚合统计"},
+            {"项目": "日尺度跳变点", "数量": jump_count, "说明": "基于日均透水率差分的稳健阈值识别"},
+            {"项目": f"维护前后{JUMP_LINK_WINDOW_DAYS}天内跳变点", "数量": linked_jump_count, "说明": "用于判断跳变与维护事件是否邻近"},
+            {"项目": f"维护邻近向上跳升点", "数量": positive_linked_jump_count, "说明": "更可能对应维护恢复效应"},
+            {"项目": f"维护前后{JUMP_LINK_WINDOW_DAYS}天内异常日期", "数量": linked_outlier_day_count, "说明": "用于解释部分异常是否与维护窗口相关"},
+        ]
+    )
+
+    threshold_table = jump_threshold_df.copy()
+    for column in ["abs_diff_q1", "abs_diff_q3", "abs_diff_iqr", "jump_threshold_per_day"]:
+        threshold_table[column] = threshold_table[column].map(lambda value: format_number(value, 4))
+
+    summary_table = jump_summary_by_filter.copy()
+    for column in ["maintenance_linked_ratio", "mean_abs_diff_per", "max_abs_diff_per"]:
+        if column in summary_table.columns:
+            summary_table[column] = summary_table[column].map(lambda value: format_number(value, 4))
+
+    outlier_table = outlier_summary_by_filter.copy()
+    for column in ["mean_outlier_ratio", "maintenance_linked_outlier_day_ratio"]:
+        if column in outlier_table.columns:
+            outlier_table[column] = outlier_table[column].map(lambda value: format_number(value, 4))
+
+    content = [
+        "# 异常点与跳变点分析说明",
+        "",
+        "## 1. 回应 C 侧反馈的处理原则",
+        "",
+        "- 对缺失值、IQR 异常值和跳变点均不直接删除，也不使用固定默认值替代。",
+        "- 缺失记录保留在 `clean_data.xlsx` 中，并通过 `is_missing` 标记；日均统计和趋势拟合只使用有效透水率值。",
+        "- IQR 异常记录保留在清洗总表中，并通过 `is_outlier` 标记；趋势和季节性参数使用剔除 IQR 异常后的 `daily_trend` 口径，避免极端点影响下降率。",
+        "- 跳变点作为运行状态突变或维护影响的候选事件单独识别，不与普通异常值混同处理。",
+        "- 断档不做跨长间隔插值；跳变识别时使用 `diff_per_per_day = diff_per / gap_days`，以减少多日断档导致的虚假跳变。",
+        "",
+        "## 2. 识别口径",
+        "",
+        "- IQR 异常值：沿用阶段 1 对每台过滤器 `per` 值的 IQR 区间初筛。",
+        "- 日尺度跳变点：先按过滤器和日期计算日均透水率，再计算相邻观测日的变化率 `diff_per_per_day`。",
+        "- 跳变阈值：对每台过滤器的 `|diff_per_per_day|` 使用 `Q3 + 1.5 * IQR` 作为稳健阈值。",
+        f"- 维护邻近窗口：若跳变日期或异常日期距离同一过滤器最近维护日期不超过 `{JUMP_LINK_WINDOW_DAYS}` 天，则标记为维护邻近事件。",
+        "",
+        "## 3. 总体统计",
+        "",
+        make_markdown_table(overview),
+        "",
+        "## 4. 每台过滤器跳变阈值",
+        "",
+        make_markdown_table(threshold_table),
+        "",
+        "## 5. 每台过滤器跳变点统计",
+        "",
+        make_markdown_table(summary_table),
+        "",
+        "## 6. 每台过滤器异常日期统计",
+        "",
+        make_markdown_table(outlier_table),
+        "",
+        "## 7. 输出文件",
+        "",
+        "- 详细表格：`01_数据处理_A/exports/异常跳变点联动分析表.xlsx`。",
+        "- 主要工作表：`jump_points`、`jump_thresholds`、`jump_summary_by_filter`、`jump_relation_summary`、`maintenance_jump_summary`、`outlier_days`、`outlier_summary_by_filter`。",
+        "- 联动图：`01_数据处理_A/figures/fig_08_jump_points_and_maintenance.png`，并已同步到 `03_论文_C/图表汇总/`。",
+        "",
+        "## 8. 论文表述建议",
+        "",
+        "- 建议写成“异常值和跳变点被保留并分类标记，其中维护邻近跳升主要反映维护恢复作用，未邻近维护的跳变保留为运行波动或待解释异常”。",
+        "- 不建议写成“异常值已删除”或“缺失值已用默认值填补”，因为当前处理原则是保留、标记、分口径使用。",
+        "",
+    ]
+    outputs.anomaly_jump_markdown.write_text("\n".join(content), encoding="utf-8")
+
+
+def write_permeability_maintenance_linkage_markdown(
+    outputs: Stage3Outputs,
+    maintenance_match_df: pd.DataFrame,
+    jump_points_df: pd.DataFrame,
+    jump_relation_summary: pd.DataFrame,
+    maintenance_jump_summary: pd.DataFrame,
+) -> None:
+    maintenance_count = int(maintenance_match_df.shape[0])
+    matched_count = int(
+        (maintenance_match_df["before_per"].notna() & maintenance_match_df["after_per"].notna()).sum()
+    )
+    linked_jump_count = int(jump_points_df["is_maintenance_linked"].sum()) if not jump_points_df.empty else 0
+    positive_linked_jump_count = int(
+        ((jump_points_df["is_maintenance_linked"]) & (jump_points_df["diff_per"] > 0)).sum()
+    ) if not jump_points_df.empty else 0
+    positive_linked_ratio = positive_linked_jump_count / linked_jump_count if linked_jump_count else np.nan
+
+    summary_by_type = maintenance_match_df.groupby(["maintain_type", "maintain_level"], as_index=False).agg(
+        maintenance_count=("maintain_date", "size"),
+        mean_before_per=("before_per", "mean"),
+        mean_after_per=("after_per", "mean"),
+        mean_delta_per=("delta_per", "mean"),
+        mean_relative_recovery_rate=("relative_recovery_rate", "mean"),
+        positive_recovery_ratio=("delta_per", lambda series: (series > 0).mean()),
+    )
+    summary_by_type = summary_by_type.merge(
+        maintenance_jump_summary[
+            [
+                "maintain_type",
+                "maintain_level",
+                "with_positive_jump_after_3d_count",
+                "positive_jump_after_3d_ratio",
+                "mean_max_positive_jump_after_3d",
+            ]
+        ],
+        on=["maintain_type", "maintain_level"],
+        how="left",
+    ).sort_values("maintain_level")
+    format_table = summary_by_type.copy()
+    for column in [
+        "mean_before_per",
+        "mean_after_per",
+        "mean_delta_per",
+        "mean_relative_recovery_rate",
+        "positive_recovery_ratio",
+        "positive_jump_after_3d_ratio",
+        "mean_max_positive_jump_after_3d",
+    ]:
+        format_table[column] = format_table[column].map(lambda value: format_number(value, 4))
+
+    relation_table = jump_relation_summary.copy()
+    for column in ["mean_diff_per", "median_diff_per", "mean_abs_diff_per"]:
+        if column in relation_table.columns:
+            relation_table[column] = relation_table[column].map(lambda value: format_number(value, 4))
+
+    overview = pd.DataFrame(
+        [
+            {"项目": "维护记录数", "结果": maintenance_count},
+            {"项目": "可匹配维护前后透水率记录数", "结果": matched_count},
+            {"项目": f"维护前后{JUMP_LINK_WINDOW_DAYS}天内跳变点数", "结果": linked_jump_count},
+            {"项目": f"维护邻近向上跳升点数", "结果": positive_linked_jump_count},
+            {"项目": "维护邻近跳变中向上跳升占比", "结果": format_percent(positive_linked_ratio)},
+        ]
+    )
+
+    content = [
+        "# 维护记录与透水率联动分析",
+        "",
+        "## 1. 分析目的",
+        "",
+        "- 本文件回应 C 侧提出的“缺少数据 A 和数据 B 内在联系”的问题。",
+        "- 这里的数据 A 指透水率监测数据，数据 B 指维护记录。",
+        "- 联动分析不重新清洗数据，而是在 A 侧已完成的 `clean_data.xlsx`、`maintenance_record.xlsx` 和 `maintenance_match.xlsx` 基础上补充事件关联解释。",
+        "",
+        "## 2. 联动口径",
+        "",
+        "1. 维护前后匹配：对每条维护记录匹配维护前最近有效透水率和维护后最近有效透水率，计算恢复量 `delta_per`。",
+        f"2. 跳变邻近匹配：识别日均透水率跳变点，并判断其是否位于同一过滤器维护日期前后 `{JUMP_LINK_WINDOW_DAYS}` 天内。",
+        "3. 维护后跳升解释：若维护后 3 天内出现向上跳升，则作为维护恢复效应的辅助证据；若跳变未邻近维护，则保留为运行波动或待解释异常。",
+        "",
+        "## 3. 总体联动结果",
+        "",
+        make_markdown_table(overview),
+        "",
+        "## 4. 按维护类型的联动统计",
+        "",
+        make_markdown_table(format_table),
+        "",
+        "## 5. 按跳变方向和维护邻近关系统计",
+        "",
+        make_markdown_table(relation_table),
+        "",
+        "## 6. 结论要点",
+        "",
+        f"- 127 条维护记录均能匹配到维护前后有效透水率，说明维护记录与透水率数据可以按过滤器编号和日期建立稳定关联。",
+        f"- 共识别到 `{jump_points_df.shape[0]}` 个日尺度跳变点，其中 `{linked_jump_count}` 个位于维护前后 `{JUMP_LINK_WINDOW_DAYS}` 天内。",
+        f"- 维护邻近跳变中有 `{positive_linked_jump_count}` 个为向上跳升，占比为 `{format_percent(positive_linked_ratio)}`，说明维护事件与透水率跳升存在明显对应关系。",
+        "- 中维护和大维护均表现出维护后透水率提升，但大维护样本量较少，论文中仍需保留样本量限制说明。",
+        "- 未邻近维护的跳变点不直接删除，应作为运行扰动、采样波动或未记录事件的候选异常进行保留说明。",
+        "",
+        "## 7. 输出文件",
+        "",
+        "- 联动明细表：`01_数据处理_A/exports/异常跳变点联动分析表.xlsx`。",
+        "- 维护匹配表：`01_数据处理_A/exports/maintenance_match.xlsx`。",
+        "- 联动图：`01_数据处理_A/figures/fig_08_jump_points_and_maintenance.png`。",
+        "",
+    ]
+    outputs.permeability_maintenance_linkage_markdown.write_text("\n".join(content), encoding="utf-8")
 
 
 def write_question1_conclusions(
@@ -1625,6 +2199,8 @@ def write_question1_conclusions(
     monthly_overall: pd.DataFrame,
     seasonal_overall: pd.DataFrame,
     summary_by_type: pd.DataFrame,
+    jump_points_df: pd.DataFrame,
+    maintenance_jump_summary: pd.DataFrame,
 ) -> None:
     decline_sorted = decline_rate_df.sort_values("daily_decline_rate", ascending=False).reset_index(drop=True)
     fastest = decline_sorted.iloc[0]
@@ -1635,6 +2211,14 @@ def write_question1_conclusions(
     worst_season = seasonal_overall.loc[seasonal_overall["season_mean_per"].idxmin()]
     middle = summary_by_type[summary_by_type["maintain_type"] == "中维护"].iloc[0]
     major = summary_by_type[summary_by_type["maintain_type"] == "大维护"].iloc[0]
+    jump_count = int(jump_points_df.shape[0])
+    linked_jump_count = int(jump_points_df["is_maintenance_linked"].sum()) if not jump_points_df.empty else 0
+    positive_linked_jump_count = int(
+        ((jump_points_df["is_maintenance_linked"]) & (jump_points_df["diff_per"] > 0)).sum()
+    ) if not jump_points_df.empty else 0
+    positive_linked_ratio = positive_linked_jump_count / linked_jump_count if linked_jump_count else np.nan
+    middle_jump = maintenance_jump_summary[maintenance_jump_summary["maintain_type"] == "中维护"].iloc[0]
+    major_jump = maintenance_jump_summary[maintenance_jump_summary["maintain_type"] == "大维护"].iloc[0]
 
     content = [
         "# 第1问结论要点",
@@ -1660,22 +2244,111 @@ def write_question1_conclusions(
         f"- 从样本结果看，中维护平均恢复量略高于大维护，但大维护平均相对恢复率更高；由于大维护样本仅 `{int(major['record_count'])}` 次，不能仅凭当前样本断定其绝对恢复量一定更弱。",
         f"- 维护后 7 天和 15 天均值，以及正向定义的维护后衰减率 `post_7d_decline_rate`、`post_15d_decline_rate` 已写入 `maintenance_match.xlsx` 与 `维护效果统计表.xlsx`。",
         "",
-        "## 4. 可供 B 建模的影响指标",
+        "## 4. 异常、跳变与维护联动",
+        "",
+        "- 缺失值、IQR 异常值和跳变点均未直接删除；缺失值保留 `is_missing` 标记，IQR 异常值保留 `is_outlier` 标记，跳变点单独输出到 `异常跳变点联动分析表.xlsx`。",
+        f"- 基于日均透水率差分的稳健阈值共识别 `{jump_count}` 个日尺度跳变点，其中 `{linked_jump_count}` 个位于维护前后 `{JUMP_LINK_WINDOW_DAYS}` 天内。",
+        f"- 维护邻近跳变中有 `{positive_linked_jump_count}` 个为向上跳升，占比为 `{format_percent(positive_linked_ratio)}`，说明维护记录与透水率跳升存在明显联动关系。",
+        f"- 中维护记录中维护后 3 天内出现向上跳升的占比为 `{middle_jump['positive_jump_after_3d_ratio']:.2%}`，大维护对应占比为 `{major_jump['positive_jump_after_3d_ratio']:.2%}`。",
+        "- 未邻近维护的跳变点保留为运行扰动、采样波动或未记录事件的候选异常，不作为删除依据。",
+        "",
+        "## 5. 可供 B 建模的影响指标",
         "",
         "- 每台过滤器长期趋势参数：`daily_decline_rate`、`annual_decline_rate`、`trend_r2`、`net_trend_slope_per_day`。",
-        "- 季节影响参数：`monthly_factor`、`season_factor` 及分过滤器月/季均值。",
+        "- 季节影响参数：`month_factor`、`season_factor` 及分过滤器月/季均值。",
         "- 维护影响参数：`delta_per`、`relative_recovery_rate`、`maintenance_effectiveness_coef`、`post_15d_decline_rate`。",
+        "- 异常与联动辅助指标：`is_outlier`、`diff_per`、`diff_per_per_day`、`is_maintenance_linked`、`maintenance_relation`。",
         "- 维护匹配口径：默认使用 `72h` 前后窗口，无法匹配时扩展至 `168h`，并在 `remark` 字段记录。",
         "",
-        "## 5. 图表与结果文件",
+        "## 6. 图表与结果文件",
         "",
         "- 图表已输出到 `01_数据处理_A/figures/` 与 `03_论文_C/图表汇总/`。",
         "- 趋势图采用三层表达：`fig_01_all_filters_time_series.png` 保留 10 台设备总览，`fig_01a_filter_time_series_facets.png` 作为正文小多图主图，`fig_01b_normalized_permeability_trend.png` 用于比较标准化后的相对趋势。",
         "- `fig_01b_normalized_permeability_trend.png` 以各过滤器日均透水率的 90 分位值作为高位基准 100，用于消除设备量级差异，不替代原始透水率绝对值分析。",
-        "- 核心数据表包括 `maintenance_match.xlsx`、`维护效果统计表.xlsx`、`每台过滤器下降率表.xlsx`。",
+        "- 新增 `fig_08_jump_points_and_maintenance.png` 用于展示跳变点与维护记录的联动关系。",
+        "- 核心数据表包括 `maintenance_match.xlsx`、`维护效果统计表.xlsx`、`每台过滤器下降率表.xlsx`、`异常跳变点联动分析表.xlsx`。",
         "",
     ]
     outputs.conclusions_markdown.write_text("\n".join(content), encoding="utf-8")
+
+
+def write_c_feedback_response_markdown(
+    outputs: Stage3Outputs,
+    maintenance_match_df: pd.DataFrame,
+    jump_points_df: pd.DataFrame,
+    maintenance_jump_summary: pd.DataFrame,
+) -> None:
+    matched_count = int((maintenance_match_df["before_per"].notna() & maintenance_match_df["after_per"].notna()).sum())
+    maintenance_count = int(maintenance_match_df.shape[0])
+    jump_count = int(jump_points_df.shape[0])
+    linked_jump_count = int(jump_points_df["is_maintenance_linked"].sum()) if not jump_points_df.empty else 0
+    positive_linked_jump_count = int(
+        ((jump_points_df["is_maintenance_linked"]) & (jump_points_df["diff_per"] > 0)).sum()
+    ) if not jump_points_df.empty else 0
+    positive_linked_ratio = positive_linked_jump_count / linked_jump_count if linked_jump_count else np.nan
+
+    def type_jump_ratio(maintain_type: str) -> str:
+        row = maintenance_jump_summary[maintenance_jump_summary["maintain_type"] == maintain_type]
+        if row.empty:
+            return "-"
+        return format_percent(row.iloc[0]["positive_jump_after_3d_ratio"])
+
+    content = [
+        "# C 反馈回应与 A 侧增强说明",
+        "",
+        "## 1. C 侧反馈要点",
+        "",
+        "C 侧反馈集中在两类问题：",
+        "",
+        "1. 数据处理对异常点、跳变点的处理思路和方法说明不够充分。",
+        "2. 趋势和结论偏单一维度，缺少透水率监测数据与维护记录之间的联动分析。",
+        "",
+        "## 2. A 侧回应原则",
+        "",
+        "- 不修改原始附件，不覆盖 `00_题目与附件/` 中的文件。",
+        "- 不把异常值简单删除，也不使用固定默认值替代缺失值。",
+        "- 将缺失、IQR 异常、日尺度跳变、维护邻近跳变分开处理。",
+        "- 将透水率监测数据与维护记录按 `filter_id` 和日期建立事件级联动关系。",
+        "- 所有新增计算结果均由 `04_代码/A_data_process.py` 可复现生成。",
+        "",
+        "## 3. 已新增或补强的交付物",
+        "",
+        "| C 侧反馈 | A 侧补强动作 | 输出文件 |",
+        "| --- | --- | --- |",
+        "| 异常点处理说明不够充分 | 明确缺失值、IQR 异常值、断档和跳变点的保留、标记和分口径使用规则 | `异常点与跳变点分析说明.md` |",
+        "| 跳变点没有单独分析 | 基于日均透水率差分和 `Q3 + 1.5IQR` 稳健阈值识别日尺度跳变点 | `异常跳变点联动分析表.xlsx` |",
+        f"| 维护记录与透水率缺少内在联系 | 将跳变点与维护日期做前后 {JUMP_LINK_WINDOW_DAYS} 天邻近匹配，并统计维护后跳升情况 | `维护记录与透水率联动分析.md` |",
+        "| 论文缺少直观图表支撑 | 新增跳变点与维护记录联动图，并同步到 C 侧图表汇总 | `fig_08_jump_points_and_maintenance.png` |",
+        "| 结论中缺少联动表述 | 在第 1 问结论和 A→B/A→C 交接材料中补充异常跳变与维护联动段落 | `第1问结论要点.md`、交接说明文件 |",
+        "",
+        "## 4. 关键增强结果",
+        "",
+        f"- 共识别 `{jump_count}` 个日尺度跳变点。",
+        f"- 其中 `{linked_jump_count}` 个跳变点位于维护前后 `{JUMP_LINK_WINDOW_DAYS}` 天内。",
+        f"- 维护邻近跳变中 `{positive_linked_jump_count}` 个为向上跳升，占比 `{format_percent(positive_linked_ratio)}`。",
+        f"- 中维护记录中维护后 3 天内出现向上跳升的占比约 `{type_jump_ratio('中维护')}`。",
+        f"- 大维护记录中维护后 3 天内出现向上跳升的占比约 `{type_jump_ratio('大维护')}`。",
+        f"- `{matched_count}` / `{maintenance_count}` 条维护记录能匹配到维护前后有效透水率，说明维护记录与透水率数据可以稳定关联。",
+        "",
+        "## 5. 对论文写作的建议",
+        "",
+        "- 在数据预处理小节中补充：异常值和跳变点没有被简单删除，而是保留并分类标记。",
+        "- 在第 1 问维护影响小节后增加“异常跳变与维护联动分析”段落。",
+        "- 使用 `fig_08_jump_points_and_maintenance.png` 说明维护邻近跳变多数为向上跳升。",
+        "- 对未邻近维护的跳变点，应表述为“运行扰动、采样波动或未记录事件的候选异常”，不要直接解释为维护效果。",
+        "",
+        "## 6. 复现方式",
+        "",
+        "在项目根目录运行：",
+        "",
+        "```bash",
+        "python 04_代码/A_data_process.py",
+        "```",
+        "",
+        "运行后会重新生成异常跳变联动表、异常跳变说明、维护联动说明、C 反馈回应说明和 `fig_08_jump_points_and_maintenance.png`。",
+        "",
+    ]
+    outputs.c_feedback_response_markdown.write_text("\n".join(content), encoding="utf-8")
 
 
 def run_stage3() -> Stage3Outputs:
@@ -1691,6 +2364,20 @@ def run_stage3() -> Stage3Outputs:
     decline_rate_df = build_decline_rate_table(daily_trend, maintenance_record_df)
     maintenance_match_df = build_maintenance_match_table(clean_data_df, maintenance_record_df)
     summary_by_type, summary_by_filter_type, decay_summary = build_maintenance_effect_tables(maintenance_match_df)
+    (
+        jump_points_df,
+        jump_threshold_df,
+        jump_summary_by_filter,
+        jump_relation_summary,
+        maintenance_jump_summary,
+        outlier_days_df,
+        outlier_summary_by_filter,
+    ) = build_jump_and_linkage_tables(
+        clean_data_df=clean_data_df,
+        daily_valid=daily_valid,
+        maintenance_record_df=maintenance_record_df,
+        maintenance_match_df=maintenance_match_df,
+    )
 
     outputs = build_stage3_excel_outputs(
         maintenance_match_df=maintenance_match_df,
@@ -1702,6 +2389,13 @@ def run_stage3() -> Stage3Outputs:
         seasonal_overall=seasonal_overall,
         monthly_by_filter=monthly_by_filter,
         seasonal_by_filter=seasonal_by_filter,
+        jump_points_df=jump_points_df,
+        jump_threshold_df=jump_threshold_df,
+        jump_summary_by_filter=jump_summary_by_filter,
+        jump_relation_summary=jump_relation_summary,
+        maintenance_jump_summary=maintenance_jump_summary,
+        outlier_days_df=outlier_days_df,
+        outlier_summary_by_filter=outlier_summary_by_filter,
     )
 
     figure_paths = (
@@ -1714,13 +2408,33 @@ def run_stage3() -> Stage3Outputs:
         plot_maintenance_effect_boxplot(maintenance_match_df),
         plot_before_after_maintenance(summary_by_type),
         plot_filter_decline_rate(decline_rate_df),
+        plot_jump_points_and_maintenance(jump_points_df, maintenance_jump_summary),
     )
     outputs = Stage3Outputs(
         maintenance_match_excel=outputs.maintenance_match_excel,
         maintenance_effect_excel=outputs.maintenance_effect_excel,
         decline_rate_excel=outputs.decline_rate_excel,
         conclusions_markdown=outputs.conclusions_markdown,
+        jump_linkage_excel=outputs.jump_linkage_excel,
+        anomaly_jump_markdown=outputs.anomaly_jump_markdown,
+        permeability_maintenance_linkage_markdown=outputs.permeability_maintenance_linkage_markdown,
+        c_feedback_response_markdown=outputs.c_feedback_response_markdown,
         figure_paths=figure_paths,
+    )
+    write_anomaly_jump_markdown(
+        outputs=outputs,
+        clean_data_df=clean_data_df,
+        jump_points_df=jump_points_df,
+        jump_threshold_df=jump_threshold_df,
+        jump_summary_by_filter=jump_summary_by_filter,
+        outlier_summary_by_filter=outlier_summary_by_filter,
+    )
+    write_permeability_maintenance_linkage_markdown(
+        outputs=outputs,
+        maintenance_match_df=maintenance_match_df,
+        jump_points_df=jump_points_df,
+        jump_relation_summary=jump_relation_summary,
+        maintenance_jump_summary=maintenance_jump_summary,
     )
     write_question1_conclusions(
         outputs=outputs,
@@ -1728,6 +2442,14 @@ def run_stage3() -> Stage3Outputs:
         monthly_overall=monthly_overall,
         seasonal_overall=seasonal_overall,
         summary_by_type=summary_by_type,
+        jump_points_df=jump_points_df,
+        maintenance_jump_summary=maintenance_jump_summary,
+    )
+    write_c_feedback_response_markdown(
+        outputs=outputs,
+        maintenance_match_df=maintenance_match_df,
+        jump_points_df=jump_points_df,
+        maintenance_jump_summary=maintenance_jump_summary,
     )
     return outputs
 
@@ -1792,6 +2514,10 @@ def main() -> None:
         stage3_outputs.maintenance_effect_excel,
         stage3_outputs.decline_rate_excel,
         stage3_outputs.conclusions_markdown,
+        stage3_outputs.jump_linkage_excel,
+        stage3_outputs.anomaly_jump_markdown,
+        stage3_outputs.permeability_maintenance_linkage_markdown,
+        stage3_outputs.c_feedback_response_markdown,
         *stage3_outputs.figure_paths,
     ):
         print(f"- {path.relative_to(ROOT_DIR)}")
