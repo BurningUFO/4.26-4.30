@@ -5,10 +5,6 @@
 当前脚本分工：
 
 - `A_data_process.py`：读取附件、清洗数据、生成第 1 问分析底表
-- `B_prediction_model.py`：寿命预测模型与参数拟合
-- `B_optimization.py`：维护策略优化与敏感性分析
-
-建议：
-
-- 公共函数尽量抽出来复用，避免复制粘贴。
-- 输出文件路径优先写成相对路径，便于多人协作。
+- `B_prediction_model.py`：第 2 问寿命预测模型、回测、结果导出与图表生成
+- `B_optimization.py`：第 3 问维护策略优化、网格搜索、结果导出与图表生成
+- `B_sensitivity_analysis.py`：第 4 问成本敏感性分析、策略稳健性检验与图表生成
