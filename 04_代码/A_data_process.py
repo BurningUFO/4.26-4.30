@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -1910,6 +1911,101 @@ def plot_jump_points_and_maintenance(
     return save_figure_to_targets(fig, "fig_08_jump_points_and_maintenance.png")
 
 
+def plot_q1_method_flowchart() -> Path:
+    fig, ax = plt.subplots(figsize=(16, 9))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+
+    def box(x: float, y: float, w: float, h: float, text: str, face: str, edge: str, fontsize: int = 12) -> None:
+        patch = FancyBboxPatch(
+            (x, y),
+            w,
+            h,
+            boxstyle="round,pad=0.016,rounding_size=0.02",
+            linewidth=1.8,
+            edgecolor=edge,
+            facecolor=face,
+        )
+        ax.add_patch(patch)
+        ax.text(x + w / 2, y + h / 2, text, ha="center", va="center", fontsize=fontsize, linespacing=1.35, color="#222222")
+
+    def arrow(x1: float, y1: float, x2: float, y2: float, color: str = "#555555", lw: float = 1.8) -> None:
+        ax.add_patch(
+            FancyArrowPatch(
+                (x1, y1),
+                (x2, y2),
+                arrowstyle="-|>",
+                mutation_scale=18,
+                linewidth=lw,
+                color=color,
+                connectionstyle="arc3,rad=0.0",
+            )
+        )
+
+    ax.text(0.5, 0.945, "第1问透水率变化规律分析建模思路", ha="center", va="center", fontsize=20, fontweight="bold", color="#222222")
+
+    # 主流程节点
+    box(0.04, 0.56, 0.17, 0.24, "原始数据\n附件1：透水率监测\n附件2：维护记录", "#E8F0FE", "#3B6EA8", fontsize=13)
+    box(0.28, 0.56, 0.18, 0.24, "数据盘点与清洗\n统一编号/日期/字段\n保留缺失与异常标记", "#EAF7EA", "#4C8A4A", fontsize=13)
+
+    # 分析模块外框
+    group_x, group_y, group_w, group_h = 0.53, 0.30, 0.27, 0.50
+    group = FancyBboxPatch(
+        (group_x, group_y),
+        group_w,
+        group_h,
+        boxstyle="round,pad=0.02,rounding_size=0.025",
+        linewidth=2.0,
+        edgecolor="#C47A2C",
+        facecolor="#FFF8EC",
+    )
+    ax.add_patch(group)
+    ax.text(group_x + group_w / 2, group_y + group_h - 0.055, "四类规律分析", ha="center", va="center", fontsize=15, fontweight="bold", color="#7A4A16")
+
+    small_w, small_h = 0.105, 0.145
+    box(0.555, 0.58, small_w, small_h, "趋势分析\n维护周期下降率\n年化下降量", "#FFF3E0", "#D08B34", fontsize=11)
+    box(0.675, 0.58, small_w, small_h, "周期性分析\n月均透水率\n季节影响因子", "#FFF3E0", "#D08B34", fontsize=11)
+    box(0.555, 0.39, small_w, small_h, "维护效果分析\n恢复量/恢复率\n维护后衰减", "#FFF3E0", "#D08B34", fontsize=11)
+    box(0.675, 0.39, small_w, small_h, "异常联动分析\nIQR异常/跳变点\n维护邻近匹配", "#FFF3E0", "#D08B34", fontsize=11)
+
+    # 输出节点
+    box(0.86, 0.58, 0.11, 0.18, "给 B\n建模参数\n下降率/季节因子\n维护恢复参数", "#FDECEC", "#B84A4A", fontsize=11)
+    box(0.86, 0.34, 0.11, 0.18, "给 C\n论文素材\n图表/图注\n第1问结论", "#FDECEC", "#B84A4A", fontsize=11)
+
+    # 主流程箭头
+    arrow(0.21, 0.68, 0.28, 0.68)
+    arrow(0.46, 0.68, group_x, 0.68)
+    arrow(group_x + group_w, 0.61, 0.86, 0.67)
+    arrow(group_x + group_w, 0.49, 0.86, 0.43)
+
+    # 说明标签
+    ax.text(0.245, 0.72, "字段统一", ha="center", va="bottom", fontsize=10, color="#555555")
+    ax.text(0.495, 0.72, "形成标准表", ha="center", va="bottom", fontsize=10, color="#555555")
+    ax.text(0.825, 0.71, "参数沉淀", ha="center", va="bottom", fontsize=10, color="#555555")
+    ax.text(0.825, 0.47, "论文表达", ha="center", va="bottom", fontsize=10, color="#555555")
+
+    ax.text(
+        0.5,
+        0.12,
+        "核心逻辑：先构造可复用清洗数据，再围绕趋势、周期、维护和异常联动四条主线分析，最后分别沉淀为 B 的模型输入与 C 的论文素材。",
+        ha="center",
+        va="center",
+        fontsize=12,
+        color="#444444",
+    )
+    ax.text(
+        0.5,
+        0.075,
+        "处理原则：原始附件只读不改；缺失值、IQR异常值和跳变点保留并分类标记；维护记录与透水率按过滤器编号和日期匹配。",
+        ha="center",
+        va="center",
+        fontsize=11,
+        color="#555555",
+    )
+    fig.tight_layout()
+    return save_figure_to_targets(fig, "fig_09_q1_method_flowchart.png")
+
 def build_stage3_excel_outputs(
     maintenance_match_df: pd.DataFrame,
     summary_by_type: pd.DataFrame,
@@ -2409,6 +2505,7 @@ def run_stage3() -> Stage3Outputs:
         plot_before_after_maintenance(summary_by_type),
         plot_filter_decline_rate(decline_rate_df),
         plot_jump_points_and_maintenance(jump_points_df, maintenance_jump_summary),
+        plot_q1_method_flowchart(),
     )
     outputs = Stage3Outputs(
         maintenance_match_excel=outputs.maintenance_match_excel,
